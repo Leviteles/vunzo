@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import db from '../database/db';
+import { client } from '../database/db';
 
 const router = Router();
 
@@ -18,21 +18,27 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-  if (existing) {
+  const existing = await client.execute({
+    sql: 'SELECT id FROM users WHERE email = ?',
+    args: [email],
+  });
+
+  if (existing.rows.length > 0) {
     res.status(409).json({ error: 'Email já cadastrado' });
     return;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const result = db.prepare(
-    'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)'
-  ).run(name, email, passwordHash);
+  const result = await client.execute({
+    sql: 'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)',
+    args: [name, email, passwordHash],
+  });
 
+  const userId = Number(result.lastInsertRowid);
   const secret = process.env.JWT_SECRET || 'vunzo_secret';
-  const token = jwt.sign({ userId: result.lastInsertRowid }, secret, { expiresIn: '30d' });
+  const token = jwt.sign({ userId }, secret, { expiresIn: '30d' });
 
-  res.status(201).json({ token, user: { id: result.lastInsertRowid, name, email, plan: 'free' } });
+  res.status(201).json({ token, user: { id: userId, name, email, plan: 'free' } });
 });
 
 router.post('/login', async (req: Request, res: Response): Promise<void> => {
@@ -43,25 +49,31 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as
-    | { id: number; name: string; email: string; password_hash: string; plan: string }
-    | undefined;
+  const result = await client.execute({
+    sql: 'SELECT * FROM users WHERE email = ?',
+    args: [email],
+  });
 
-  if (!user) {
+  if (result.rows.length === 0) {
     res.status(401).json({ error: 'Email ou senha incorretos' });
     return;
   }
 
-  const valid = await bcrypt.compare(password, user.password_hash);
+  const user = result.rows[0];
+  const valid = await bcrypt.compare(password, String(user.password_hash));
+
   if (!valid) {
     res.status(401).json({ error: 'Email ou senha incorretos' });
     return;
   }
 
   const secret = process.env.JWT_SECRET || 'vunzo_secret';
-  const token = jwt.sign({ userId: user.id }, secret, { expiresIn: '30d' });
+  const token = jwt.sign({ userId: Number(user.id) }, secret, { expiresIn: '30d' });
 
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan } });
+  res.json({
+    token,
+    user: { id: Number(user.id), name: String(user.name), email: String(user.email), plan: String(user.plan) },
+  });
 });
 
 export default router;

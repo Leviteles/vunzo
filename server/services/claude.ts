@@ -4,7 +4,18 @@ import path from 'path';
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || '' });
 
-const PROMPT_PATH = path.join(__dirname, '../../prompt.txt');
+// Suporta tanto ambiente local quanto Netlify Functions (paths diferentes)
+function loadPrompt(): string {
+  const candidates = [
+    path.join(__dirname, 'prompt.txt'),        // Netlify Function bundle
+    path.join(__dirname, '../../prompt.txt'),  // Local dev
+    path.join(process.cwd(), 'prompt.txt'),    // Fallback
+  ];
+  for (const p of candidates) {
+    try { return fs.readFileSync(p, 'utf-8'); } catch { /* try next */ }
+  }
+  throw new Error('Arquivo prompt.txt não encontrado.');
+}
 
 export interface FinancialData {
   income: number;
@@ -73,7 +84,7 @@ export async function analyzeFinances(data: FinancialData): Promise<string> {
   let systemPrompt = '';
 
   try {
-    systemPrompt = fs.readFileSync(PROMPT_PATH, 'utf-8');
+    systemPrompt = loadPrompt();
   } catch {
     throw new Error('Arquivo prompt.txt não encontrado. Verifique se ele existe na pasta raiz do projeto.');
   }

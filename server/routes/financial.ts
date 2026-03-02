@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { analyzeFinances, chatFinances, FinancialData } from '../services/claude';
-import db from '../database/db';
+import { client } from '../database/db';
 
 const router = Router();
 
@@ -11,38 +11,32 @@ const PLAN_LIMITS: Record<string, number> = {
   premium: Infinity,
 };
 
-function getMonthlyUsage(userId: number): number {
+async function getMonthlyUsage(userId: number): Promise<number> {
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
 
-  const row = db.prepare(`
-    SELECT COUNT(*) as count FROM financial_reports
-    WHERE user_id = ? AND created_at >= ?
-  `).get(userId, startOfMonth.toISOString()) as { count: number };
+  const result = await client.execute({
+    sql: `SELECT COUNT(*) as count FROM financial_reports WHERE user_id = ? AND created_at >= ?`,
+    args: [userId, startOfMonth.toISOString()],
+  });
 
-  return row.count;
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 router.post('/analyze', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId;
   if (!userId) { res.status(401).json({ error: 'Não autenticado' }); return; }
 
-  const user = db.prepare('SELECT plan FROM users WHERE id = ?').get(userId) as
-    | { plan: string }
-    | undefined;
-
-  const plan = user?.plan || 'free';
+  const userResult = await client.execute({ sql: 'SELECT plan FROM users WHERE id = ?', args: [userId] });
+  const plan = String(userResult.rows[0]?.plan ?? 'free');
   const limit = PLAN_LIMITS[plan] ?? 3;
-  const usage = getMonthlyUsage(userId);
+  const usage = await getMonthlyUsage(userId);
 
   if (usage >= limit) {
     res.status(429).json({
       error: `Limite mensal atingido. Seu plano ${plan} permite ${limit} análise${limit !== 1 ? 's' : ''} por mês.`,
-      limitReached: true,
-      plan,
-      usage,
-      limit,
+      limitReached: true, plan, usage, limit,
     });
     return;
   }
@@ -57,19 +51,10 @@ router.post('/analyze', authMiddleware, async (req: AuthRequest, res: Response):
   try {
     const report = await analyzeFinances({ income, fixedExpenses, variableExpenses, debts, assets });
 
-    db.prepare(`
-      INSERT INTO financial_reports
-        (user_id, income, fixed_expenses, variable_expenses, debts, assets, ai_report)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      userId,
-      income,
-      JSON.stringify(fixedExpenses || []),
-      JSON.stringify(variableExpenses || []),
-      JSON.stringify(debts || []),
-      JSON.stringify(assets || []),
-      report
-    );
+    await client.execute({
+      sql: `INSERT INTO financial_reports (user_id, income, fixed_expenses, variable_expenses, debts, assets, ai_report) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [userId, income, JSON.stringify(fixedExpenses || []), JSON.stringify(variableExpenses || []), JSON.stringify(debts || []), JSON.stringify(assets || []), report],
+    });
 
     res.json({ report });
   } catch (err) {
@@ -78,17 +63,14 @@ router.post('/analyze', authMiddleware, async (req: AuthRequest, res: Response):
   }
 });
 
-router.get('/usage', authMiddleware, (req: AuthRequest, res: Response): void => {
+router.get('/usage', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId;
   if (!userId) { res.status(401).json({ error: 'Não autenticado' }); return; }
 
-  const user = db.prepare('SELECT plan FROM users WHERE id = ?').get(userId) as
-    | { plan: string }
-    | undefined;
-
-  const plan = user?.plan || 'free';
+  const userResult = await client.execute({ sql: 'SELECT plan FROM users WHERE id = ?', args: [userId] });
+  const plan = String(userResult.rows[0]?.plan ?? 'free');
   const limit = PLAN_LIMITS[plan] ?? 3;
-  const usage = getMonthlyUsage(userId);
+  const usage = await getMonthlyUsage(userId);
 
   res.json({ plan, usage, limit: limit === Infinity ? null : limit });
 });
@@ -103,15 +85,8 @@ router.post('/chat', authMiddleware, async (req: AuthRequest, res: Response): Pr
     question: string;
   };
 
-  if (!question?.trim()) {
-    res.status(400).json({ error: 'Pergunta não pode ser vazia' });
-    return;
-  }
-
-  if (!reportContext) {
-    res.status(400).json({ error: 'Contexto do relatório ausente' });
-    return;
-  }
+  if (!question?.trim()) { res.status(400).json({ error: 'Pergunta não pode ser vazia' }); return; }
+  if (!reportContext) { res.status(400).json({ error: 'Contexto do relatório ausente' }); return; }
 
   try {
     const answer = await chatFinances(reportContext, history || [], question);
@@ -122,37 +97,24 @@ router.post('/chat', authMiddleware, async (req: AuthRequest, res: Response): Pr
   }
 });
 
-router.get('/history', authMiddleware, (req: AuthRequest, res: Response): void => {
+router.get('/history', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId;
   if (!userId) { res.status(401).json({ error: 'Não autenticado' }); return; }
 
-  type ReportRow = {
-    id: number;
-    income: number;
-    fixed_expenses: string;
-    variable_expenses: string;
-    debts: string;
-    assets: string;
-    ai_report: string;
-    created_at: string;
-  };
+  const result = await client.execute({
+    sql: `SELECT id, income, fixed_expenses, variable_expenses, debts, assets, ai_report, created_at FROM financial_reports WHERE user_id = ? ORDER BY created_at DESC`,
+    args: [userId],
+  });
 
-  const rows = db.prepare(`
-    SELECT id, income, fixed_expenses, variable_expenses, debts, assets, ai_report, created_at
-    FROM financial_reports
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-  `).all(userId) as ReportRow[];
-
-  const reports = rows.map(r => ({
-    id: r.id,
-    income: r.income,
-    fixedExpenses: JSON.parse(r.fixed_expenses),
-    variableExpenses: JSON.parse(r.variable_expenses),
-    debts: JSON.parse(r.debts),
-    assets: JSON.parse(r.assets),
-    aiReport: r.ai_report,
-    createdAt: r.created_at,
+  const reports = result.rows.map(r => ({
+    id: Number(r.id),
+    income: Number(r.income),
+    fixedExpenses: JSON.parse(String(r.fixed_expenses)),
+    variableExpenses: JSON.parse(String(r.variable_expenses)),
+    debts: JSON.parse(String(r.debts)),
+    assets: JSON.parse(String(r.assets)),
+    aiReport: String(r.ai_report),
+    createdAt: String(r.created_at),
   }));
 
   res.json({ reports });
