@@ -1,0 +1,12 @@
+[build]
+  command = "vite build"
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA fallback: todas as rotas retornam index.html para o React Router funcionar
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

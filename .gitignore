@@ -24,3 +24,6 @@ Thumbs.db
 
 # Vite
 .vite/
+
+# Frontend build output (gerado automaticamente no deploy)
+public/

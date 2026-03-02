@@ -75,7 +75,7 @@ export async function analyzeFinances(data: FinancialData): Promise<string> {
   try {
     systemPrompt = fs.readFileSync(PROMPT_PATH, 'utf-8');
   } catch {
-    throw new Error('Arquivo prompt.txt não encontrado. Verifique se ele existe em backend/prompt.txt');
+    throw new Error('Arquivo prompt.txt não encontrado. Verifique se ele existe na pasta raiz do projeto.');
   }
 
   const userContext = buildUserContext(data);

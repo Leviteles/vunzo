@@ -1,9 +1,9 @@
-import { DatabaseSync } from 'node:sqlite';
+import Database from 'better-sqlite3';
 import path from 'path';
 
 const DB_PATH = path.join(__dirname, '../../vunzo.db');
 
-const db = new DatabaseSync(DB_PATH);
+const db = new Database(DB_PATH);
 
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
